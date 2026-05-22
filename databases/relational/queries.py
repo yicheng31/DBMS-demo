@@ -165,6 +165,9 @@ def query_national_rail_fare(
     Returns:
         dict with fare_class, base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
+    if stops_travelled <= 0:
+        return None
+
     sql = """
         SELECT
             fare_class,
@@ -244,6 +247,9 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
     Returns:
         dict with base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
+    if stops_travelled <= 0:
+        return None
+
     sql = """
         SELECT
             base_fare_usd,
@@ -594,7 +600,7 @@ def execute_booking(
             seat = cur.fetchone()
             if seat is None:
                 conn.rollback()
-                return False, "Requested seat is not available"
+                return False, "No seats available for this schedule/date/fare class"
 
             booking_id = _gen_booking_id()
             payment_id = _gen_payment_id()
