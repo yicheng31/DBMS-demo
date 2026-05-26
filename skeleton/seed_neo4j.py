@@ -15,18 +15,18 @@ import json
 import os
 import sys
 
-sys.path.insert(0, ".")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+DATA_DIR = os.path.join(PROJECT_DIR, "train-mock-data")
+
+sys.path.insert(0, PROJECT_DIR)
 
 from neo4j import GraphDatabase
 from skeleton.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 
-_DATA_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "train-mock-data")
-)
-
 
 def _load(filename):
-    with open(os.path.join(_DATA_DIR, filename), encoding="utf-8") as f:
+    with open(os.path.join(DATA_DIR, filename), encoding="utf-8") as f:
         return json.load(f)
 
 
