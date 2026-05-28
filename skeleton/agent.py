@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Author: Your name
+# @Date:   2026-05-28 14:29:40
+# @Last Modified by:   Your name
+# @Last Modified time: 2026-05-28 20:30:03
 """
 TransitFlow - Intelligent Agent
 
@@ -331,6 +336,7 @@ get_national_rail_fare(schedule_id, fare_class, stops_travelled)
 get_national_rail_schedule_fares(schedule_id)
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
+get_metro_fare(origin_id, destination_id)
 get_available_seats(schedule_id, travel_date, fare_class)
 make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, fare_class, seat_id, ticket_type?)
 cancel_booking(booking_id)
@@ -340,6 +346,17 @@ get_payment_info(booking_id)
 search_policy(query)
 find_alternative_routes(origin_id, destination_id, avoid_station_id, network?)
 get_delay_ripple(station_id, hops?)"""
+
+
+TOOL_REQUIREMENTS = {tool["name"]: set(tool.get("required", [])) for tool in TOOLS}
+
+
+def _missing_required_params(tool_name: str, params: dict) -> list[str]:
+    required_params = TOOL_REQUIREMENTS.get(tool_name, set())
+    return [
+        key for key in sorted(required_params)
+        if params.get(key) in (None, "")
+    ]
 
 
 def _execute_tool(
@@ -615,6 +632,9 @@ def _user_confirmed(history: list[dict]) -> bool:
         "",
     )
     confirm_words = {"confirm", "yes", "確認", "好", "ok", "好的", "沒問題", "訂吧", "訂了"}
+    if re.search(r"\b(confirm|yes|ok)\b", last_user):
+        return True
+    confirm_words -= {"confirm", "yes", "ok"}
     return any(word in last_user for word in confirm_words)
 
 
@@ -957,6 +977,14 @@ JSON:"""
     for call in tool_calls:
         tool_name = call.get("name", "")
         params = call.get("params") or call.get("parameters", {})
+        missing_params = _missing_required_params(tool_name, params)
+
+        if missing_params:
+            if debug:
+                debug_info.append(
+                    f"**Skipped** `{tool_name}` - missing required params: {missing_params}"
+                )
+            continue
 
         if any(v == "" for v in params.values()):
             if debug:
