@@ -33,6 +33,7 @@ from databases.relational.queries import (
     query_metro_schedules,
     query_national_rail_availability,
     query_national_rail_fare,
+    query_national_rail_schedule_fares,
     query_payment_info,
     query_policy_vector_search,
     query_user_bookings,
@@ -183,6 +184,17 @@ TOOLS = [
         "required": ["schedule_id", "fare_class", "stops_travelled"],
     },
     {
+        "name": "get_national_rail_schedule_fares",
+        "description": (
+            "Get all ticket prices for a national rail schedule id when the user asks "
+            "for the price of a service such as NR_SCH04."
+        ),
+        "parameters": {
+            "schedule_id": {"type": "string", "description": "e.g. NR_SCH04"},
+        },
+        "required": ["schedule_id"],
+    },
+    {
         "name": "check_metro_availability",
         "description": "Check available metro services between two metro stations.",
         "parameters": {
@@ -316,6 +328,7 @@ TOOLS_SCHEMA = """\
 find_route(origin_id, destination_id, optimise_by?)
 check_national_rail_availability(origin_id, destination_id, travel_date?)
 get_national_rail_fare(schedule_id, fare_class, stops_travelled)
+get_national_rail_schedule_fares(schedule_id)
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
 get_available_seats(schedule_id, travel_date, fare_class)
@@ -341,6 +354,11 @@ def _execute_tool(
 
         elif tool_name == "get_national_rail_fare":
             result = query_national_rail_fare(**params)
+
+        elif tool_name == "get_national_rail_schedule_fares":
+            result = query_national_rail_schedule_fares(params["schedule_id"])
+            if not result:
+                return json.dumps({"error": f"找不到班次 {params['schedule_id']} 的票價資料。"})
 
         elif tool_name == "check_metro_availability":
             result = query_metro_schedules(
@@ -409,7 +427,7 @@ def _execute_tool(
         elif tool_name == "get_payment_info":
             if not current_user_email:
                 return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試。"})
-            result = query_payment_info(params["booking_id"])
+            result = query_payment_info(params["booking_id"], current_user_email)
             if result is None:
                 return json.dumps({"error": f"找不到訂單 {params['booking_id']} 的付款紀錄。"})
 
@@ -645,25 +663,31 @@ USER: "{augmented_message}"
 JSON:"""
 
     if llm.get_chat_provider() == "ollama":
-        tool_calls = llm.ollama_tool_call(
-            recent_history,
-            TOOLS,
-            augmented_message,
-            system_prompt=(
-                "You are a tool router. Call the right tool based on the user message. "
-                f"Logged-in user: {current_user_email or 'none'}. "
-                "My bookings/tickets/travel history/我的訂票 -> get_user_bookings. "
-                "My account/profile/我的帳號 -> get_user_profile. "
-                "Payment info for booking -> get_payment_info. "
-                "Book a ticket -> check availability first, then make_booking only after confirmation. "
-                "Cancel a booking -> cancel_booking. "
-                "Policy/rules/refund/luggage/bicycle/退款/補償/行李/寵物 -> search_policy. "
-                "Route/directions/fastest/how-to-get/怎麼去/路線 -> find_route. "
-                "Metro fare/price/cost/票價/多少錢 -> get_metro_fare. "
-                "Schedule/timetable/trains/services/班次/時刻表 -> availability tools. "
-                "Only call a tool when needed."
-            ),
-        )
+        try:
+            tool_calls = llm.ollama_tool_call(
+                recent_history,
+                TOOLS,
+                augmented_message,
+                system_prompt=(
+                    "You are a tool router. Call the right tool based on the user message. "
+                    f"Logged-in user: {current_user_email or 'none'}. "
+                    "My bookings/tickets/travel history/我的訂票 -> get_user_bookings. "
+                    "My account/profile/我的帳號 -> get_user_profile. "
+                    "Payment info for booking -> get_payment_info. "
+                    "Fare/price/cost for a rail schedule id like NR_SCH04 -> get_national_rail_schedule_fares. "
+                    "Book a ticket -> check availability first, then make_booking only after confirmation. "
+                    "Cancel a booking -> cancel_booking. "
+                    "Policy/rules/refund/luggage/bicycle/退款/補償/行李/寵物 -> search_policy. "
+                    "Route/directions/fastest/how-to-get/怎麼去/路線 -> find_route. "
+                    "Metro fare/price/cost/票價/多少錢 -> get_metro_fare. "
+                    "Schedule/timetable/trains/services/班次/時刻表 -> availability tools. "
+                    "Only call a tool when needed."
+                ),
+            )
+        except ConnectionError as exc:
+            tool_calls = []
+            if debug:
+                debug_info.append(f"**Tool selection unavailable:** {exc}")
         if debug:
             debug_info.append(f"**Tool selection (native):** {tool_calls}")
     else:
@@ -677,6 +701,7 @@ JSON:"""
 
     lower = augmented_message.lower()
     station_ids = re.findall(r"\b(MS\d{2}|NR\d{2})\b", augmented_message, re.IGNORECASE)
+    schedule_ids = re.findall(r"\b(NR_SCH\d{2}|MS_SCH\d{2})\b", augmented_message, re.IGNORECASE)
     two_stations = len(station_ids) >= 2
 
     def _tool_selected(name: str, *required_params) -> bool:
@@ -719,6 +744,29 @@ JSON:"""
         "如何搭",
         "怎麼搭",
     }
+    fare_triggers = {
+        "fare",
+        "price",
+        "cost",
+        "ticket price",
+        "多少錢",
+        "票價",
+        "價格",
+        "費用",
+    }
+    if (
+        schedule_ids
+        and any(kw in lower for kw in fare_triggers)
+        and not _tool_selected("get_national_rail_schedule_fares", "schedule_id")
+    ):
+        schedule_id = schedule_ids[0].upper()
+        if schedule_id.startswith("NR_SCH"):
+            _fallback(
+                "get_national_rail_schedule_fares",
+                {"schedule_id": schedule_id},
+                "national rail schedule fare query",
+            )
+
     is_route = (
         any(kw in lower for kw in route_triggers)
         or (two_stations and "route" in lower)
@@ -886,6 +934,7 @@ JSON:"""
         "捷運",
         "列車",
     }
+    data_block = ""
     if tool_results:
         data_block = "\n\n".join(
             f"[{tr['tool']}]\n{_normalise_result(tr['tool'], tr['result'])}"
@@ -909,7 +958,18 @@ JSON:"""
         content = user_message
 
     final_messages = history + [{"role": "user", "content": content}]
-    answer = llm.chat(messages=final_messages, system_prompt=contextual_prompt)
+    try:
+        answer = llm.chat(messages=final_messages, system_prompt=contextual_prompt)
+    except ConnectionError as exc:
+        if tool_results:
+            answer = f"目前 Ollama 沒有啟動；先直接提供資料庫查詢結果：\n\n{data_block}"
+        else:
+            answer = (
+                "目前 Ollama 沒有啟動，所以我無法產生 AI 回覆。"
+                "請啟動 Ollama，或在右側切換到 Gemini 後再試一次。"
+            )
+        if debug:
+            debug_info.append(f"**LLM unavailable:** {exc}")
 
     updated_history = history + [
         {"role": "user", "content": user_message},
