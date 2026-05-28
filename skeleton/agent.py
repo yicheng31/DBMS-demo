@@ -16,15 +16,13 @@ THE THREE DATABASE ROLES IN THIS FILE:
   - Vector (pgvector / RAG)  → policy documents (refunds, conduct, luggage, etc.)
   - Graph (Neo4j)            → route finding, delay ripple, cross-network paths
 
-STUDENT TASK
-------------
-You do NOT need to rewrite this file.
-Your goal is to make the database queries richer by:
-  1. Adding more data to PostgreSQL (new tables, more seed data)
-  2. Writing better Cypher in databases/graph/queries.py
-  3. Adding more policy documents (databases/vector/documents.py)
-
-The agent will automatically use whatever you put in the databases.
+OPTIMIZATIONS (v2):
+  1. Chinese keyword & station name support
+  2. Added get_user_profile and get_payment_info tools
+  3. More human-friendly system prompt and error messages
+  4. Booking confirmation mechanism (agent-side)
+  5. Quick-select station buttons (UI-side)
+  6. Structured, emoji-enhanced response formatting
 """
 
 from __future__ import annotations
@@ -44,6 +42,7 @@ from databases.relational.queries import (
     auto_select_adjacent_seats,
     query_user_profile,
     query_user_bookings,
+    query_payment_info,
     execute_booking,
     execute_cancellation,
     query_policy_vector_search,
@@ -60,20 +59,34 @@ from databases.graph.queries import (
 # ── Station name → ID lookup (resolved in Python, not by the LLM) ────────────
 
 _STATION_INDEX: dict[str, str] = {
-    # Metro
-    "central square": "MS01", "riverside":   "MS02", "northgate":  "MS03",
-    "elm park":       "MS04", "westfield":   "MS05", "harbour view": "MS06",
-    "old town":       "MS07", "university":  "MS08", "queensbridge": "MS09",
-    "parkside":       "MS10", "greenhill":   "MS11", "lakeshore":  "MS12",
-    "clifton":        "MS13", "eastwick":    "MS14", "ferndale":   "MS15",
-    "hilltop":        "MS16", "broadmoor":   "MS17", "sunnyvale":  "MS18",
-    "redwood":        "MS19", "thornton":    "MS20",
-    # National Rail (longer/specific names first so they match before shorter substrings)
+    # Metro — English
+    "central square": "MS01", "riverside":     "MS02", "northgate":    "MS03",
+    "elm park":       "MS04", "westfield":     "MS05", "harbour view": "MS06",
+    "old town":       "MS07", "university":    "MS08", "queensbridge": "MS09",
+    "parkside":       "MS10", "greenhill":     "MS11", "lakeshore":    "MS12",
+    "clifton":        "MS13", "eastwick":      "MS14", "ferndale":     "MS15",
+    "hilltop":        "MS16", "broadmoor":     "MS17", "sunnyvale":    "MS18",
+    "redwood":        "MS19", "thornton":      "MS20",
+    # Metro — 中文
+    "中央廣場": "MS01", "河濱站": "MS02", "北門站":       "MS03",
+    "榆樹公園站": "MS04", "西田站": "MS05", "海港景站":   "MS06",
+    "舊城站":   "MS07", "大學站": "MS08", "皇后橋站":    "MS09",
+    "公園側站": "MS10", "綠丘站": "MS11", "湖岸站":      "MS12",
+    "克利夫頓站": "MS13", "東威克站": "MS14", "芬戴爾站": "MS15",
+    "山頂站":   "MS16", "寬地站": "MS17", "陽光谷站":    "MS18",
+    "紅木站":   "MS19", "桑頓站": "MS20",
+    # National Rail — English (longer names first so they match before shorter substrings)
     "central station":   "NR01", "maplewood":     "NR02",
     "old town junction": "NR03", "ashford":        "NR04",
     "stonehaven":        "NR05", "bridgeport":     "NR06",
     "ferndale halt":     "NR07", "coalport":       "NR08",
     "dunmore":           "NR09", "langford end":   "NR10",
+    # National Rail — 中文
+    "中央站":       "NR01", "楓木站":         "NR02",
+    "舊城交匯站":   "NR03", "阿什福德站":     "NR04",
+    "石港站":       "NR05", "橋港站":         "NR06",
+    "芬戴爾停靠站": "NR07", "煤港站":         "NR08",
+    "丹摩站":       "NR09", "蘭福德終點站":   "NR10",
 }
 
 
@@ -99,15 +112,37 @@ def _inject_station_ids(text: str) -> str:
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are TransitFlow, a transit assistant for a dual-network system.
+SYSTEM_PROMPT = """You are TransitFlow, a friendly and patient transit assistant for a dual-network system.
 
 Networks: City Metro MS01-MS20 (lines M1-M4) | National Rail NR01-NR10 (lines NR1-NR2)
 Interchanges: Central=MS01/NR01 | Old Town=MS07/NR03 | Ferndale=MS15/NR07
 Today: {today}
 
-LOGIN RULE: Routes, fares, schedules, and policies work WITHOUT login for all users. Only make_booking and cancel_booking need login — if the user tries to book or cancel and is not logged in, tell them to log in first.
+PERSONALITY:
+- Be warm, helpful, and patient like a real customer service agent.
+- Never show raw error codes or technical messages to the user.
+- When data is not found, apologise and suggest next steps.
+- Always end with an offer to help further.
 
-When DATA FROM TRANSITFLOW DATABASE is provided, use it as the only source of truth. Do not contradict it or say a route was not found if the data shows one.
+RESPONSE FORMAT:
+- Use emojis to make responses easier to read (🚂 for trains, 🚇 for metro, 💰 for fares, 💺 for seats, 🗺️ for routes, 📋 for policies).
+- For schedules, use clear sections with labels.
+- For routes, list every station in order and highlight interchange points.
+- Keep responses concise but complete.
+
+ERROR HANDLING:
+- If no schedule found: "很抱歉，找不到相關班次。請確認站點代碼是否正確，或嘗試其他日期。"
+- If no route found: "很抱歉，找不到這兩站之間的路線。建議您查看是否需要換乘。"
+- If not logged in for booking: "您需要先登入才能訂票，請點右上角的登入按鈕 😊"
+
+BOOKING CONFIRMATION RULE:
+- Before calling make_booking, ALWAYS summarise the booking details and ask the user to confirm.
+- Only call make_booking after the user explicitly says "confirm", "yes", "確認", "好", or "ok".
+- Example: "您即將訂購以下票券：\n🚂 NR01 → NR05\n📅 2025-06-01\n💺 Standard 座位\n💰 預估票價 $X\n\n請回覆「確認」以完成訂票，或告訴我需要修改的地方。"
+
+LOGIN RULE: Routes, fares, schedules, and policies work WITHOUT login. Only make_booking and cancel_booking need login.
+
+When DATA FROM TRANSITFLOW DATABASE is provided, use it as the only source of truth.
 For route results: list every station name in order, note any line changes, and give the total travel time.
 Always reply in the same language as the user.
 """.format(today=date.today().isoformat())
@@ -162,7 +197,7 @@ TOOLS = [
         "name": "get_metro_fare",
         "description": (
             "Get the metro ticket PRICE between two stations. "
-            "Use ONLY for fare/price/cost questions ('how much does it cost', 'what is the fare'). "
+            "Use ONLY for fare/price/cost questions ('how much does it cost', 'what is the fare', '票價多少', '多少錢'). "
             "Do NOT use this for route or direction questions — use find_route instead."
         ),
         "parameters": {
@@ -182,6 +217,28 @@ TOOLS = [
         "required": [],
     },
     {
+        "name": "get_user_profile",
+        "description": (
+            "Retrieve the logged-in user's profile information including name, email, and account details. "
+            "Use when the user asks about their account, profile, or personal information. "
+            "Requires login — no parameters needed."
+        ),
+        "parameters": {},
+        "required": [],
+    },
+    {
+        "name": "get_payment_info",
+        "description": (
+            "Retrieve payment details for a specific booking or metro trip. "
+            "Use when the user asks about payment status, amount paid, or payment history for a booking. "
+            "Requires login."
+        ),
+        "parameters": {
+            "booking_id": {"type": "string", "description": "Booking or trip ID e.g. BK-A1B2C3 or TR-X1Y2Z3"},
+        },
+        "required": ["booking_id"],
+    },
+    {
         "name": "get_available_seats",
         "description": (
             "Show available seats on a national rail service for a given date and fare class. "
@@ -198,8 +255,9 @@ TOOLS = [
         "name": "make_booking",
         "description": (
             "Create a national rail booking for the logged-in user. "
-            "REQUIRES LOGIN. Only call after the user has explicitly confirmed all booking details. "
-            "Do NOT call this speculatively."
+            "REQUIRES LOGIN. Only call after the user has explicitly confirmed all booking details "
+            "by saying 'confirm', 'yes', '確認', '好', or 'ok'. "
+            "Do NOT call this speculatively or before confirmation."
         ),
         "parameters": {
             "schedule_id":            {"type": "string", "description": "e.g. NR_SCH01"},
@@ -229,7 +287,8 @@ TOOLS = [
         "description": (
             "Search company policy documents. Use for any question about: "
             "refunds, delay compensation, luggage, bicycles, pets, food and drink, "
-            "conduct, booking rules, ticket types, fare evasion, or child fares."
+            "conduct, booking rules, ticket types, fare evasion, or child fares. "
+            "Also use for Chinese policy questions: 退款, 補償, 行李, 寵物, 腳踏車."
         ),
         "parameters": {
             "query": {"type": "string", "description": "Natural language question about policy"},
@@ -241,6 +300,7 @@ TOOLS = [
         "description": (
             "Find the best route or path between two stations. Use for ANY question about "
             "directions, how to get from A to B, fastest route, quickest route, or shortest path. "
+            "Also use for Chinese route questions: 怎麼去, 如何前往, 最快路線, 最短路線, 路線規劃. "
             "Works for metro-only, rail-only, or cross-network journeys. "
             "Use optimise_by='time' for fastest/quickest, 'cost' for cheapest."
         ),
@@ -284,6 +344,8 @@ get_available_seats(schedule_id, travel_date, fare_class)
 make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, fare_class, seat_id, ticket_type?)
 cancel_booking(booking_id)
 get_user_bookings()
+get_user_profile()
+get_payment_info(booking_id)
 search_policy(query)
 find_alternative_routes(origin_id, destination_id, avoid_station_id, network?)
 get_delay_ripple(station_id, hops?)"""
@@ -322,7 +384,7 @@ def _execute_tool(
                 destination_id=params["destination_id"],
             )
             if not schedules:
-                result = {"error": "No metro service found between these stations."}
+                result = {"error": "很抱歉，找不到這兩站之間的捷運服務。請確認站點代碼是否正確。"}
             else:
                 sched = schedules[0]
                 stops = sched.get("stops_in_order") or []
@@ -340,23 +402,37 @@ def _execute_tool(
                     "line":         sched.get("line"),
                     "schedule_id":  sched["schedule_id"],
                     "stops":        n_stops,
-                    **(fare or {"error": "Fare lookup failed"}),
+                    **(fare or {"error": "很抱歉，票價查詢失敗，請稍後再試。"}),
                 }
 
         elif tool_name == "get_user_bookings":
             if not current_user_email:
-                return json.dumps({"error": "No user is currently logged in."})
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
             result = query_user_bookings(current_user_email)
+
+        elif tool_name == "get_user_profile":
+            if not current_user_email:
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
+            result = query_user_profile(current_user_email)
+            if result is None:
+                return json.dumps({"error": "找不到使用者資料，請重新登入。"})
+
+        elif tool_name == "get_payment_info":
+            if not current_user_email:
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
+            result = query_payment_info(params["booking_id"])
+            if result is None:
+                return json.dumps({"error": f"找不到訂單 {params['booking_id']} 的付款紀錄。請確認訂單編號是否正確。"})
 
         elif tool_name == "get_available_seats":
             result = query_available_seats(**params)
 
         elif tool_name == "make_booking":
             if not current_user_email:
-                return json.dumps({"error": "You must be logged in to make a booking."})
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
             profile = query_user_profile(current_user_email)
             if not profile:
-                return json.dumps({"error": "User profile not found."})
+                return json.dumps({"error": "找不到使用者資料，請重新登入。"})
             ok, data = execute_booking(
                 user_id=profile["user_id"],
                 schedule_id=params["schedule_id"],
@@ -367,23 +443,25 @@ def _execute_tool(
                 seat_id=params["seat_id"],
                 ticket_type=params.get("ticket_type", "single"),
             )
-            result = data if ok else {"error": data}
+            result = data if ok else {"error": f"訂票失敗：{data}。請稍後再試或聯絡客服。"}
 
         elif tool_name == "cancel_booking":
             if not current_user_email:
-                return json.dumps({"error": "You must be logged in to cancel a booking."})
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
             profile = query_user_profile(current_user_email)
             if not profile:
-                return json.dumps({"error": "User profile not found."})
+                return json.dumps({"error": "找不到使用者資料，請重新登入。"})
             ok, data = execute_cancellation(
                 booking_id=params["booking_id"],
                 user_id=profile["user_id"],
             )
-            result = data if ok else {"error": data}
+            result = data if ok else {"error": f"取消失敗：{data}。請確認訂單編號是否正確。"}
 
         elif tool_name == "search_policy":
             embedding = llm.embed(params["query"])
             docs = query_policy_vector_search(embedding)
+            if not docs:
+                return json.dumps({"error": "很抱歉，找不到相關政策資訊。請嘗試用不同的關鍵字搜尋。"})
             result = [
                 {
                     "title":      d["title"],
@@ -400,7 +478,6 @@ def _execute_tool(
             network        = params.get("network", "auto")
             optimise_by    = params.get("optimise_by", "time")
 
-            # Detect cross-network routing (one MS, one NR)
             is_cross = (
                 (origin_id.upper().startswith("MS") and destination_id.upper().startswith("NR")) or
                 (origin_id.upper().startswith("NR") and destination_id.upper().startswith("MS"))
@@ -437,12 +514,12 @@ def _execute_tool(
             )
 
         else:
-            result = {"error": f"Unknown tool: {tool_name}"}
+            result = {"error": f"很抱歉，發生未知錯誤（{tool_name}）。請稍後再試。"}
 
         return json.dumps(result, default=str)
 
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return json.dumps({"error": f"很抱歉，系統發生錯誤：{str(e)}。請稍後再試或聯絡客服。"})
 
 
 def _flatten_to_text(obj, depth: int = 0) -> str:
@@ -478,11 +555,6 @@ def _flatten_to_text(obj, depth: int = 0) -> str:
 
 
 def _normalise_result(tool_name: str, result_json: str) -> str:
-    """
-    Convert raw tool JSON to structured readable text for the answer LLM.
-    Pure Python — works for any tool output without per-tool code.
-    Students never need to touch this when adding new tools.
-    """
     try:
         data = json.loads(result_json)
     except json.JSONDecodeError:
@@ -493,18 +565,10 @@ def _normalise_result(tool_name: str, result_json: str) -> str:
 
 
 def _summarise_result(tool_name: str, result_json: str) -> str:
-    """Raw result string shown in the debug panel only."""
     return result_json
 
 
 def _parse_tool_calls(llm_response: str) -> list[dict] | None:
-    """
-    Parse tool call JSON from the LLM response.
-
-    The LLM is prompted to respond ONLY with a JSON block when it wants
-    to call tools. Format:
-        {"tool_calls": [{"name": "...", "params": {...}}, ...]}
-    """
     import re
     text = llm_response.strip()
     if text.startswith("```"):
@@ -512,8 +576,6 @@ def _parse_tool_calls(llm_response: str) -> list[dict] | None:
         if text.startswith("json"):
             text = text[4:]
         text = text.strip()
-    # raw_decode stops after the first complete JSON object, so it handles both
-    # preamble text and multiple JSON objects in one response (common on small models).
     decoder = json.JSONDecoder()
     for m in re.finditer(r'\{', text):
         try:
@@ -523,6 +585,23 @@ def _parse_tool_calls(llm_response: str) -> list[dict] | None:
         except (json.JSONDecodeError, KeyError, ValueError):
             continue
     return None
+
+
+# ── Booking confirmation helper ───────────────────────────────────────────────
+
+def _user_confirmed(history: list[dict]) -> bool:
+    """
+    Check if the most recent user message contains an explicit confirmation.
+    Used as a second safety gate before executing make_booking.
+    """
+    if not history:
+        return False
+    last_user = next(
+        (m["content"].lower() for m in reversed(history) if m["role"] == "user"),
+        ""
+    )
+    confirm_words = {"confirm", "yes", "確認", "好", "ok", "好的", "沒問題", "訂吧", "訂了"}
+    return any(word in last_user for word in confirm_words)
 
 
 def run_agent(
@@ -553,24 +632,20 @@ def run_agent(
         else:
             user_display = current_user_email
         contextual_prompt = SYSTEM_PROMPT + (
-            f"\n\nLogged-in user: {user_display}. "
-            "Answer personal booking queries for this user without asking for their email or ID. "
-            "Use get_user_bookings() for any booking history request. "
-            "Use make_booking / cancel_booking for booking and cancellation requests."
+            f"\n\n目前登入使用者：{user_display}。"
+            "請直接回答此使用者的個人訂票問題，不需要再詢問 email 或 ID。"
+            "查詢訂票紀錄請使用 get_user_bookings()。"
+            "訂票和取消請使用 make_booking / cancel_booking。"
         )
     else:
         contextual_prompt = SYSTEM_PROMPT + (
-            "\n\nNo user is currently logged in. "
-            "If the user asks about personal bookings, history, or wants to make/cancel a booking, "
-            "tell them they must log in first."
+            "\n\n目前沒有使用者登入。"
+            "如果使用者詢問個人訂票、歷史紀錄，或想要訂票、取消訂票，"
+            "請友善地告知他們需要先登入，例如：「您好！要查看訂票紀錄或進行訂票，"
+            "需要先登入您的帳號，請點右上角的登入按鈕 😊」"
         )
 
-    # Step 1: Ask the LLM which tools to call
-    # Include recent history so the LLM can extract params from multi-turn flows.
     recent_history = history[-4:] if len(history) > 4 else history
-
-    # Substitute station names with 'name (ID)' inline so the LLM reads the ID
-    # directly next to each name and uses it as the parameter value.
     _augmented_message = _inject_station_ids(user_message)
 
     tool_selection_prompt = f"""Output only this JSON (no other text):
@@ -580,8 +655,11 @@ Or if no tool needed: {{"tool_calls": []}}
 STATIONS: Metro=MS01-MS20, Rail=NR01-NR10
 USER: {current_user_email or "not logged in"}
 get_user_bookings: call (no params) when logged-in user asks about their bookings, tickets, or travel history.
-make_booking/cancel_booking: only if user is logged in.
-Route/path/journey questions: use find_route. Policy questions: use search_policy.
+get_user_profile: call (no params) when logged-in user asks about their account or profile.
+get_payment_info: call with booking_id when user asks about payment for a specific booking.
+make_booking/cancel_booking: only if user is logged in AND has explicitly confirmed.
+Route/path/journey/怎麼去/如何前往/路線 questions: use find_route.
+Policy/rules/退款/補償/行李/寵物 questions: use search_policy.
 Never use "" as a param value. Omit optional params if unknown.
 
 TOOLS:
@@ -594,31 +672,39 @@ USER: "{_augmented_message}"
 
 Examples:
 "fastest route MS01 to MS14" -> {{"tool_calls": [{{"name": "find_route", "params": {{"origin_id": "MS01", "destination_id": "MS14", "optimise_by": "time"}}}}]}}
+"從中央廣場到東威克站最快怎麼走" -> {{"tool_calls": [{{"name": "find_route", "params": {{"origin_id": "MS01", "destination_id": "MS14", "optimise_by": "time"}}}}]}}
 "cheapest NR01 to NR05" -> {{"tool_calls": [{{"name": "find_route", "params": {{"origin_id": "NR01", "destination_id": "NR05", "optimise_by": "cost"}}}}]}}
 "trains NR01 to NR03 on 2025-06-01" -> {{"tool_calls": [{{"name": "check_national_rail_availability", "params": {{"origin_id": "NR01", "destination_id": "NR03", "travel_date": "2025-06-01"}}}}]}}
+"查NR01到NR05的班次" -> {{"tool_calls": [{{"name": "check_national_rail_availability", "params": {{"origin_id": "NR01", "destination_id": "NR05"}}}}]}}
 "refund policy" -> {{"tool_calls": [{{"name": "search_policy", "params": {{"query": "refund policy"}}}}]}}
+"退款政策" -> {{"tool_calls": [{{"name": "search_policy", "params": {{"query": "退款政策"}}}}]}}
 "hello" -> {{"tool_calls": []}}
 "show my bookings" -> {{"tool_calls": [{{"name": "get_user_bookings", "params": {{}}}}]}}
+"我的訂票紀錄" -> {{"tool_calls": [{{"name": "get_user_bookings", "params": {{}}}}]}}
+"my account" -> {{"tool_calls": [{{"name": "get_user_profile", "params": {{}}}}]}}
+"我的帳號資料" -> {{"tool_calls": [{{"name": "get_user_profile", "params": {{}}}}]}}
+"payment for BK-A1B2C3" -> {{"tool_calls": [{{"name": "get_payment_info", "params": {{"booking_id": "BK-A1B2C3"}}}}]}}
 "book me a seat NR01 to NR05 on 2025-06-01" -> {{"tool_calls": [{{"name": "check_national_rail_availability", "params": {{"origin_id": "NR01", "destination_id": "NR05", "travel_date": "2025-06-01"}}}}]}}
+"確認" -> only call make_booking if previous assistant message asked for confirmation
 
 JSON:"""
 
     if llm.get_chat_provider() == "ollama":
-        # llama3.2:1b is fine-tuned for native tool calling — far more reliable than
-        # prompt-based JSON routing which produces malformed output on 1B models.
         tool_calls = llm.ollama_tool_call(
             recent_history, TOOLS, _augmented_message,
             system_prompt=(
                 "You are a tool router. Call the right tool based on the user message. "
                 f"Logged-in user: {current_user_email or 'none'}. "
-                "My bookings/tickets/travel history → get_user_bookings (no params). "
-                "Book a ticket / make a booking → check_national_rail_availability first, then make_booking. "
+                "My bookings/tickets/travel history/我的訂票 → get_user_bookings (no params). "
+                "My account/profile/我的帳號 → get_user_profile (no params). "
+                "Payment info for booking → get_payment_info(booking_id). "
+                "Book a ticket / make a booking → check_national_rail_availability first, then make_booking only after confirmation. "
                 "Cancel a booking → cancel_booking. "
-                "Policy/rules/conduct/compensation/luggage/bicycle questions → search_policy. "
-                "Route/directions/fastest/quickest/how-to-get/path questions → find_route ONLY (never get_metro_fare). "
-                "Metro fare/price/cost/how-much-does-it-cost questions → get_metro_fare. "
+                "Policy/rules/conduct/compensation/luggage/bicycle/退款/補償/行李/寵物 questions → search_policy. "
+                "Route/directions/fastest/quickest/how-to-get/path/怎麼去/路線/如何前往 questions → find_route ONLY. "
+                "Metro fare/price/cost/票價/多少錢 questions → get_metro_fare. "
                 "Rail fare/cost/price questions → check_national_rail_availability then get_national_rail_fare. "
-                "Schedule/timetable/trains/services questions → check_national_rail_availability or check_metro_availability. "
+                "Schedule/timetable/trains/services/班次/時刻表 questions → check_national_rail_availability or check_metro_availability. "
                 "Only call a tool when needed. Output nothing except tool calls."
             ),
         )
@@ -634,15 +720,11 @@ JSON:"""
             debug_info.append(f"**Tool selection:** {selection_response}")
 
     # ── Deterministic fallbacks ────────────────────────────────────────────────
-    # llama3.2:1b is unreliable for tool routing on anything beyond trivial queries.
-    # Rules below cover every common query type.  Each rule only fires when the
-    # correct tool is not already selected with valid required params.
     _lower = _augmented_message.lower()
     _station_ids = re.findall(r'\b(MS\d{2}|NR\d{2})\b', _augmented_message, re.IGNORECASE)
     _two_stations = len(_station_ids) >= 2
 
     def _tool_selected(name: str, *required_params) -> bool:
-        """Return True only if tool `name` is in tool_calls with all required params set."""
         call = next((c for c in tool_calls if c.get("name") == name), None)
         if not call:
             return False
@@ -655,24 +737,36 @@ JSON:"""
         if debug:
             debug_info.append(f"**Fallback:** {reason} → {name}({params})")
 
-    # 1. Route / directions / path — also overrides wrong-tool selections
-    _route_triggers = {"fastest route", "quickest route", "shortest route", "cheapest route",
-                       "best route", "how to get", "directions from", "route from", "route to",
-                       "get from", "travel from", "way from", "path from"}
+    # 1. Route / directions / path
+    _route_triggers = {
+        # English
+        "fastest route", "quickest route", "shortest route", "cheapest route",
+        "best route", "how to get", "directions from", "route from", "route to",
+        "get from", "travel from", "way from", "path from",
+        # 中文
+        "最快路線", "最短路線", "最便宜路線", "最便宜", "怎麼去", "如何前往",
+        "路線規劃", "路線查詢", "怎麼走", "如何去", "如何搭", "怎麼搭",
+    }
     _is_route = (
         any(kw in _lower for kw in _route_triggers) or
-        (_two_stations and "route" in _lower)
+        (_two_stations and "route" in _lower) or
+        (_two_stations and "路線" in _lower)
     )
     if _is_route and _two_stations and not _tool_selected("find_route", "origin_id", "destination_id"):
-        _opt = "cost" if any(kw in _lower for kw in ["cheap", "cheapest", "lowest cost"]) else "time"
+        _opt = "cost" if any(kw in _lower for kw in ["cheap", "cheapest", "lowest cost", "最便宜", "最低票價"]) else "time"
         _fallback("find_route",
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "optimise_by": _opt},
                   "route query")
 
-    # 2. Availability / trains / schedules between two stations
+    # 2. Availability / trains / schedules
     elif not tool_calls and _two_stations:
-        _avail_triggers = {"train", "trains", "service", "services", "run from", "runs from",
-                           "schedule", "timetable", "available", "availability"}
+        _avail_triggers = {
+            # English
+            "train", "trains", "service", "services", "run from", "runs from",
+            "schedule", "timetable", "available", "availability",
+            # 中文
+            "班次", "時刻表", "列車", "有沒有車", "幾點有車", "查車",
+        }
         if any(kw in _lower for kw in _avail_triggers):
             o, d = _station_ids[0].upper(), _station_ids[1].upper()
             _travel_date = next(
@@ -684,13 +778,46 @@ JSON:"""
             _tool = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
             _fallback(_tool, _params, "availability query")
 
-    # 3. Personal booking history — requires login
+    # 3. Personal booking history
     if current_user_email and not tool_calls:
-        _personal_triggers = {"my booking", "my ticket", "my trip", "my journey", "my history",
-                               "my reservation", "show booking", "view booking", "check booking",
-                               "list booking", "show my", "view my"}
+        _personal_triggers = {
+            # English
+            "my booking", "my ticket", "my trip", "my journey", "my history",
+            "my reservation", "show booking", "view booking", "check booking",
+            "list booking", "show my", "view my",
+            # 中文
+            "我的訂票", "我的票", "我的行程", "訂票紀錄", "查詢訂票",
+            "我訂的", "我的車票",
+        }
         if any(kw in _lower for kw in _personal_triggers):
             _fallback("get_user_bookings", {}, "personal booking query")
+
+    # 4. Personal profile
+    if current_user_email and not tool_calls:
+        _profile_triggers = {
+            "my account", "my profile", "my info", "account details",
+            "我的帳號", "我的資料", "帳號資訊", "個人資料",
+        }
+        if any(kw in _lower for kw in _profile_triggers):
+            _fallback("get_user_profile", {}, "profile query")
+
+    # 5. Policy questions
+    if not tool_calls:
+        _policy_triggers = {
+            "refund", "policy", "compensation", "luggage", "bicycle", "pet",
+            "退款", "補償", "政策", "行李", "寵物", "腳踏車", "規定",
+        }
+        if any(kw in _lower for kw in _policy_triggers):
+            _fallback("search_policy", {"query": user_message}, "policy query")
+
+    # ── Booking confirmation gate ──────────────────────────────────────────────
+    # If the LLM wants to call make_booking but the user hasn't confirmed yet,
+    # block it and let the LLM ask for confirmation instead.
+    if any(c.get("name") == "make_booking" for c in tool_calls):
+        if not _user_confirmed(history + [{"role": "user", "content": user_message}]):
+            tool_calls = []
+            if debug:
+                debug_info.append("**Booking gate:** make_booking blocked — no confirmation detected.")
 
     # Step 2: Execute each tool call against the real databases
     tool_results = []
@@ -698,7 +825,6 @@ JSON:"""
         tool_name = call.get("name", "")
         params    = call.get("params") or call.get("parameters", {})
 
-        # Skip calls with empty string values — LLM failed to extract params
         if any(v == "" for v in params.values()):
             if debug:
                 debug_info.append(f"**Skipped** `{tool_name}` — empty params: {params}")
@@ -708,7 +834,6 @@ JSON:"""
             debug_info.append(f"**Calling:** `{tool_name}({params})`")
 
         result_json = _execute_tool(tool_name, params, current_user_email)
-
         summary = _summarise_result(tool_name, result_json)
 
         if debug:
@@ -724,11 +849,12 @@ JSON:"""
             "summary": summary,
         })
 
-    # Step 3: Normalise raw tool results to plain English using the LLM, then
-    # compose the final answer.  The normalisation call replaces hand-crafted
-    # per-tool formatters: any tool a student adds works automatically.
-    _DB_KEYWORDS = {"booking", "ticket", "schedule", "fare", "route", "seat",
-                    "train", "metro", "journey", "trip", "history", "reservation"}
+    # Step 3: Compose the final answer
+    _DB_KEYWORDS = {
+        "booking", "ticket", "schedule", "fare", "route", "seat",
+        "train", "metro", "journey", "trip", "history", "reservation",
+        "訂票", "班次", "票價", "路線", "座位", "捷運", "列車",
+    }
     if tool_results:
         data_block = "\n\n".join(
             f"[{tr['tool']}]\n{_normalise_result(tr['tool'], tr['result'])}"
@@ -739,24 +865,21 @@ JSON:"""
         content = (
             f"DATA FROM TRANSITFLOW DATABASE:\n{data_block}"
             f"\n\nUser asks: {user_message}"
-            f"\n\nAnswer using only the data above:"
+            f"\n\nAnswer using only the data above. Use emojis and clear formatting:"
         )
     elif any(kw in user_message.lower() for kw in _DB_KEYWORDS):
-        # No tool was called but the question needs DB data — prevent hallucination.
         content = (
             f"User asks: {user_message}\n\n"
             "IMPORTANT: No data was retrieved from the TransitFlow database for this query. "
-            "Do NOT invent any bookings, fares, schedules, seat numbers, or travel times. "
-            "Tell the user no data was found."
+            "Apologise politely in the user's language and suggest what they can try instead. "
+            "Do NOT invent any bookings, fares, schedules, seat numbers, or travel times."
         )
     else:
         content = user_message
 
     final_messages = history + [{"role": "user", "content": content}]
-
     answer = llm.chat(messages=final_messages, system_prompt=contextual_prompt)
 
-    # Update history
     updated_history = history + [
         {"role": "user",      "content": user_message},
         {"role": "assistant", "content": answer},
@@ -765,3 +888,5 @@ JSON:"""
     if debug:
         return answer, updated_history, "\n\n".join(debug_info)
     return answer, updated_history
+
+    
