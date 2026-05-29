@@ -829,7 +829,7 @@ JSON:"""
     # empty ones. The small LLM often picks the wrong tool (e.g. get_metro_fare
     # instead of check_metro_availability). These rules catch and correct that.
     _lower = _augmented_message.lower()
-    _station_ids = re.findall(r'\b(MS\d{2}|NR\d{2})\b', _augmented_message, re.IGNORECASE)
+    _station_ids = re.findall(r'(MS\d{2}|NR\d{2})', _augmented_message, re.IGNORECASE)
     _two_stations = len(_station_ids) >= 2
 
     def _tool_selected(name: str, *required_params) -> bool:
