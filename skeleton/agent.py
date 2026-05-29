@@ -1,3 +1,6 @@
+# TASK 6 EXTENSION: added get_user_profile and get_payment_info tools,
+# Chinese keyword support, booking confirmation gate, human-friendly prompts,
+# stronger fallback logic, greeting protection, Chinese policy query translation
 """
 TransitFlow — Intelligent Agent
 ================================
@@ -16,13 +19,16 @@ THE THREE DATABASE ROLES IN THIS FILE:
   - Vector (pgvector / RAG)  → policy documents (refunds, conduct, luggage, etc.)
   - Graph (Neo4j)            → route finding, delay ripple, cross-network paths
 
-OPTIMIZATIONS (v2):
+OPTIMIZATIONS (v3):
   1. Chinese keyword & station name support
   2. Added get_user_profile and get_payment_info tools
   3. More human-friendly system prompt and error messages
   4. Booking confirmation mechanism (agent-side)
   5. Quick-select station buttons (UI-side)
   6. Structured, emoji-enhanced response formatting
+  7. Stronger fallback: overrides wrong tool selections, not just empty ones
+  8. Greeting protection: simple greetings skip all tool calls
+  9. Chinese policy query translation: auto-translates Chinese to English for vector search
 """
 
 from __future__ import annotations
@@ -90,6 +96,51 @@ _STATION_INDEX: dict[str, str] = {
 }
 
 
+# ── Chinese → English policy query translation map ────────────────────────────
+# OPTIMIZATION v3: When the user asks about policies in Chinese, the vector
+# embeddings (trained on English text) won't match well. This map translates
+# common Chinese policy keywords to English so the similarity search works.
+
+_POLICY_TRANSLATION: dict[str, str] = {
+    "退款": "refund cancellation policy",
+    "退票": "refund cancellation policy",
+    "取消": "cancellation refund policy",
+    "補償": "delay compensation policy",
+    "延誤": "delay compensation policy",
+    "誤點": "delay compensation policy",
+    "行李": "luggage baggage policy",
+    "寵物": "pet animal travel policy",
+    "腳踏車": "bicycle bike travel policy",
+    "自行車": "bicycle bike travel policy",
+    "兒童": "child fare discount policy",
+    "小孩": "child fare discount policy",
+    "票種": "ticket types single return day pass",
+    "票價": "fare pricing ticket cost",
+    "規定": "rules policy regulations",
+    "政策": "company policy rules",
+    "食物": "food drink policy onboard",
+    "飲料": "food drink policy onboard",
+    "逃票": "fare evasion penalty",
+    "罰款": "fare evasion penalty",
+    "訂票規則": "booking rules policy",
+}
+
+
+def _translate_policy_query(query: str) -> str:
+    """
+    If the query contains Chinese policy keywords, produce an English
+    translation that the embedding model can match against English documents.
+    Falls back to the original query if no Chinese keywords are found.
+    """
+    translations = []
+    for zh, en in _POLICY_TRANSLATION.items():
+        if zh in query:
+            translations.append(en)
+    if translations:
+        return " ".join(translations)
+    return query
+
+
 def _inject_station_ids(text: str) -> str:
     """
     Replace station names in text with 'name (ID)' so the LLM reads the ID
@@ -108,6 +159,31 @@ def _inject_station_ids(text: str) -> str:
             result = pattern.sub(f"{name} ({sid})", result)
             seen_ids.add(sid)
     return result
+
+
+# ── Greeting detection ────────────────────────────────────────────────────────
+# OPTIMIZATION v3: Simple greetings should not trigger any tool call.
+# The small LLM (llama3.2:1b) often misroutes greetings to random tools.
+
+_GREETING_PATTERNS = {
+    "你好", "您好", "嗨", "哈囉", "早安", "午安", "晚安",
+    "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+    "howdy", "greetings", "yo", "sup",
+}
+
+
+def _is_greeting(text: str) -> bool:
+    """Return True if the message is a simple greeting with no actionable content."""
+    clean = text.strip().lower().rstrip("!！。.~")
+    # Exact match or very short message that matches a greeting
+    if clean in _GREETING_PATTERNS:
+        return True
+    # Short messages (under 10 chars) that start with a greeting
+    if len(clean) < 10:
+        for g in _GREETING_PATTERNS:
+            if clean.startswith(g):
+                return True
+    return False
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -138,7 +214,7 @@ ERROR HANDLING:
 BOOKING CONFIRMATION RULE:
 - Before calling make_booking, ALWAYS summarise the booking details and ask the user to confirm.
 - Only call make_booking after the user explicitly says "confirm", "yes", "確認", "好", or "ok".
-- Example: "您即將訂購以下票券：\n🚂 NR01 → NR05\n📅 2025-06-01\n💺 Standard 座位\n💰 預估票價 $X\n\n請回覆「確認」以完成訂票，或告訴我需要修改的地方。"
+- Example: "您即將訂購以下票券：\\n🚂 NR01 → NR05\\n📅 2025-06-01\\n💺 Standard 座位\\n💰 預估票價 $X\\n\\n請回覆「確認」以完成訂票，或告訴我需要修改的地方。"
 
 LOGIN RULE: Routes, fares, schedules, and policies work WITHOUT login. Only make_booking and cancel_booking need login.
 
@@ -458,8 +534,16 @@ def _execute_tool(
             result = data if ok else {"error": f"取消失敗：{data}。請確認訂單編號是否正確。"}
 
         elif tool_name == "search_policy":
-            embedding = llm.embed(params["query"])
+            # OPTIMIZATION v3: translate Chinese queries to English for better
+            # vector similarity matching against English policy documents.
+            raw_query = params["query"]
+            search_query = _translate_policy_query(raw_query)
+            embedding = llm.embed(search_query)
             docs = query_policy_vector_search(embedding)
+            # If translated query found nothing, try original as fallback
+            if not docs and search_query != raw_query:
+                embedding = llm.embed(raw_query)
+                docs = query_policy_vector_search(embedding)
             if not docs:
                 return json.dumps({"error": "很抱歉，找不到相關政策資訊。請嘗試用不同的關鍵字搜尋。"})
             result = [
@@ -624,6 +708,25 @@ def run_agent(
     """
     debug_info = []
 
+    # ── OPTIMIZATION v3: Greeting protection ──────────────────────────────
+    # Simple greetings should never trigger a tool call. The small LLM
+    # (llama3.2:1b) often misroutes greetings to random tools like
+    # get_user_bookings. This gate catches them before the LLM runs.
+    if _is_greeting(user_message):
+        if debug:
+            debug_info.append("**Greeting detected** — skipping all tool calls.")
+        answer = llm.chat(
+            messages=history + [{"role": "user", "content": user_message}],
+            system_prompt=SYSTEM_PROMPT,
+        )
+        updated_history = history + [
+            {"role": "user",      "content": user_message},
+            {"role": "assistant", "content": answer},
+        ]
+        if debug:
+            return answer, updated_history, "\n\n".join(debug_info)
+        return answer, updated_history
+
     # Build a context-aware system prompt based on login state
     if current_user_email:
         profile = query_user_profile(current_user_email)
@@ -679,6 +782,7 @@ Examples:
 "refund policy" -> {{"tool_calls": [{{"name": "search_policy", "params": {{"query": "refund policy"}}}}]}}
 "退款政策" -> {{"tool_calls": [{{"name": "search_policy", "params": {{"query": "退款政策"}}}}]}}
 "hello" -> {{"tool_calls": []}}
+"你好" -> {{"tool_calls": []}}
 "show my bookings" -> {{"tool_calls": [{{"name": "get_user_bookings", "params": {{}}}}]}}
 "我的訂票紀錄" -> {{"tool_calls": [{{"name": "get_user_bookings", "params": {{}}}}]}}
 "my account" -> {{"tool_calls": [{{"name": "get_user_profile", "params": {{}}}}]}}
@@ -705,6 +809,7 @@ JSON:"""
                 "Metro fare/price/cost/票價/多少錢 questions → get_metro_fare. "
                 "Rail fare/cost/price questions → check_national_rail_availability then get_national_rail_fare. "
                 "Schedule/timetable/trains/services/班次/時刻表 questions → check_national_rail_availability or check_metro_availability. "
+                "Greetings like hello/hi/你好 → do NOT call any tool. "
                 "Only call a tool when needed. Output nothing except tool calls."
             ),
         )
@@ -720,6 +825,9 @@ JSON:"""
             debug_info.append(f"**Tool selection:** {selection_response}")
 
     # ── Deterministic fallbacks ────────────────────────────────────────────────
+    # OPTIMIZATION v3: Fallbacks now override WRONG tool selections, not just
+    # empty ones. The small LLM often picks the wrong tool (e.g. get_metro_fare
+    # instead of check_metro_availability). These rules catch and correct that.
     _lower = _augmented_message.lower()
     _station_ids = re.findall(r'\b(MS\d{2}|NR\d{2})\b', _augmented_message, re.IGNORECASE)
     _two_stations = len(_station_ids) >= 2
@@ -737,7 +845,7 @@ JSON:"""
         if debug:
             debug_info.append(f"**Fallback:** {reason} → {name}({params})")
 
-    # 1. Route / directions / path
+    # 1. Route / directions / path — also overrides wrong-tool selections
     _route_triggers = {
         # English
         "fastest route", "quickest route", "shortest route", "cheapest route",
@@ -758,25 +866,30 @@ JSON:"""
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "optimise_by": _opt},
                   "route query")
 
-    # 2. Availability / trains / schedules
-    elif not tool_calls and _two_stations:
-        _avail_triggers = {
-            # English
-            "train", "trains", "service", "services", "run from", "runs from",
-            "schedule", "timetable", "available", "availability",
-            # 中文
-            "班次", "時刻表", "列車", "有沒有車", "幾點有車", "查車",
-        }
-        if any(kw in _lower for kw in _avail_triggers):
-            o, d = _station_ids[0].upper(), _station_ids[1].upper()
+    # 2. Availability / trains / schedules between two stations
+    # OPTIMIZATION v3: This now fires even when the LLM selected a WRONG tool,
+    # not just when tool_calls is empty. Condition changed from
+    # "elif not tool_calls and _two_stations" to check for correct tool.
+    _avail_triggers = {
+        # English
+        "train", "trains", "service", "services", "run from", "runs from",
+        "schedule", "timetable", "available", "availability",
+        "what", "which", "are there", "do any",
+        # 中文
+        "班次", "時刻表", "列車", "有沒有車", "幾點有車", "查車",
+        "有哪些", "哪些班次",
+    }
+    if (not _is_route and _two_stations and any(kw in _lower for kw in _avail_triggers)):
+        o, d = _station_ids[0].upper(), _station_ids[1].upper()
+        _expected_tool = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
+        if not _tool_selected(_expected_tool, "origin_id", "destination_id"):
             _travel_date = next(
                 (w for w in _lower.split() if re.match(r'\d{4}-\d{2}-\d{2}', w)), None
             )
             _params = {"origin_id": o, "destination_id": d}
             if _travel_date:
                 _params["travel_date"] = _travel_date
-            _tool = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
-            _fallback(_tool, _params, "availability query")
+            _fallback(_expected_tool, _params, "availability query (override wrong tool)")
 
     # 3. Personal booking history
     if current_user_email and not tool_calls:
@@ -888,5 +1001,3 @@ JSON:"""
     if debug:
         return answer, updated_history, "\n\n".join(debug_info)
     return answer, updated_history
-
-    
