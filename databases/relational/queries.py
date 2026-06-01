@@ -28,8 +28,6 @@ are already implemented — do not modify them.
 from __future__ import annotations
 
 import json
-import random
-import string
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
@@ -53,18 +51,45 @@ def _connect():
     return conn
 
 
+# External display IDs are generated from the current max matching prefix.
+def _gen_prefixed_id(cur, table: str, column: str, prefix: str) -> str:
+    """Create the next sequential external code, such as BK021 or PM041."""
+    # Only count IDs that match the seeded numeric format. Older random IDs like
+    # BK-ABC123 remain valid, but they should not control the next sequence.
+    cur.execute(
+        f"""
+        SELECT COALESCE(MAX(SUBSTRING({column} FROM %s)::INTEGER), 0)
+        FROM {table}
+        WHERE {column} ~ %s
+        """,
+        (len(prefix) + 1, f"^{prefix}[0-9]+$"),
+    )
+    next_number = cur.fetchone()[0] + 1
+    return f"{prefix}{next_number:03d}"
+
+
 # External booking IDs stay separate from internal numeric primary keys.
-def _gen_booking_id() -> str:
+def _gen_booking_id(cur) -> str:
     """Create a short external booking code for new national rail bookings."""
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"BK-{suffix}"
+    return _gen_prefixed_id(cur, "national_rail_bookings", "booking_id", "BK")
 
 
 # External payment IDs are short display references for inserted payments.
-def _gen_payment_id() -> str:
+def _gen_payment_id(cur) -> str:
     """Create a short external payment code for newly inserted payments."""
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"PM-{suffix}"
+    return _gen_prefixed_id(cur, "payments", "payment_id", "PM")
+
+
+# External metro trip IDs follow the seeded MT001, MT002, ... sequence.
+def _gen_trip_id(cur) -> str:
+    """Create a short external trip code for newly inserted metro trips."""
+    return _gen_prefixed_id(cur, "metro_trips", "trip_id", "MT")
+
+
+# External feedback IDs follow the seeded FB001, FB002, ... sequence.
+def _gen_feedback_id(cur) -> str:
+    """Create a short external feedback code for newly inserted feedback."""
+    return _gen_prefixed_id(cur, "feedback", "feedback_id", "FB")
 
 
 # New users should continue the seeded RU01, RU02, ... display sequence.
@@ -775,8 +800,8 @@ def execute_booking(
                 conn.rollback()
                 return False, "No seats available for this schedule/date/fare class"
 
-            booking_id = _gen_booking_id()
-            payment_id = _gen_payment_id()
+            booking_id = _gen_booking_id(cur)
+            payment_id = _gen_payment_id(cur)
             cur.execute(
                 """
                 INSERT INTO national_rail_bookings (
