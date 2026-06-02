@@ -282,6 +282,9 @@ def query_alternative_routes(
     """
     Find route legs for paths that avoid a specific intermediate station.
     """
+    if avoid_station_id in {origin_id, destination_id}:
+        return []
+
     routes = _route_query(
         origin_id=origin_id,
         destination_id=destination_id,
