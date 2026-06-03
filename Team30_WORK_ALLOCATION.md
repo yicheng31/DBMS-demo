@@ -1,4 +1,4 @@
-# Work Allocation Report - TeamXX
+# Work Allocation Report - Team30
 
 Repository used as evidence: https://github.com/yicheng31/DBMS-demo
 
