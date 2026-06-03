@@ -5,7 +5,7 @@
 # booking confirmation context recovery, cancel vs policy classification fix,
 # pre-login check, ticket type extraction, seat preference detection
 """
-TransitFlow — Intelligent Agent (v4 final)
+TransitFlow - Intelligent Agent (v4 final)
 ============================================
 OPTIMIZATIONS:
   1.  Chinese keyword & station name support (30 mappings)
