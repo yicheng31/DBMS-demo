@@ -41,7 +41,25 @@ def _station_dict(node) -> dict:
         "name": node.get("name"),
         "network": node.get("network"),
         "lines": list(node.get("lines") or []),
+        "interchange_metro_station_id": node.get("interchange_metro_station_id"),
+        "interchange_national_rail_station_id": node.get(
+            "interchange_national_rail_station_id"
+        ),
     }
+
+
+def _physical_station_key(station: dict) -> str:
+    """Group paired metro/rail interchange nodes as one physical station.
+
+    Example: MS15 (Ferndale) and NR07 (Ferndale Halt) are separate graph
+    nodes, but passengers experience them as one interchange station.  This key
+    lets route search avoid revisiting, or explicitly avoiding, either side of
+    the same physical station.
+    """
+    station_id = station["station_id"]
+    metro_pair = station.get("interchange_metro_station_id")
+    rail_pair = station.get("interchange_national_rail_station_id")
+    return min(filter(None, [station_id, metro_pair, rail_pair]))
 
 
 def _leg_dict(start_node, rel, end_node) -> dict:
@@ -197,13 +215,36 @@ def _route_query(
         return []
 
     max_routes = max(1, int(limit or 1))
-    queue: list[tuple[float, int, str, list[tuple[str, dict]], set[str]]] = [
-        (0.0, 0, origin_id, [], {origin_id})
+
+    # Interchange pairs are stored as two nodes, so compare physical-station
+    # keys when applying avoid rules and cycle checks.
+    origin_physical_key = _physical_station_key(stations[origin_id])
+    destination_physical_key = _physical_station_key(stations[destination_id])
+    avoid_physical_key = (
+        _physical_station_key(stations[avoid_station_id])
+        if avoid_station_id in stations
+        else None
+    )
+    if avoid_physical_key in {origin_physical_key, destination_physical_key}:
+        # A route cannot avoid its own start/end physical station.
+        return []
+
+    # Queue item: (cost, tie-breaker, current node, path, visited node IDs,
+    # visited physical station keys).
+    queue: list[tuple[
+        float,
+        int,
+        str,
+        list[tuple[str, dict]],
+        set[str],
+        set[str],
+    ]] = [
+        (0.0, 0, origin_id, [], {origin_id}, {origin_physical_key})
     ]
     routes: list[dict] = []
     tie_breaker = 1
     while queue and len(routes) < max_routes:
-        _, _, current_id, path_edges, visited = heapq.heappop(queue)
+        _, _, current_id, path_edges, visited, visited_physical = heapq.heappop(queue)
         if current_id == destination_id:
             route = _build_route(origin_id, destination_id, stations, path_edges)
             if optimise_by == "fare":
@@ -213,19 +254,47 @@ def _route_query(
             routes.append(route)
             continue
 
+        current_physical_key = _physical_station_key(stations[current_id])
         for edge in edges.get(current_id, []):
             next_id = edge["to"]
             if next_id in visited:
                 continue
-            if avoid_station_id and next_id == avoid_station_id and next_id != destination_id:
-                continue
             if not _edge_allowed(edge, relationship_filter):
                 continue
+
+            next_physical_key = _physical_station_key(stations[next_id])
+            if avoid_physical_key and next_physical_key == avoid_physical_key:
+                # Avoiding MS15 must also block NR07, and vice versa.
+                continue
+
+            direct_interchange = (
+                edge["relationship"] == "INTERCHANGE_TO"
+                and current_physical_key == next_physical_key
+            )
+            if next_physical_key in visited_physical and not direct_interchange:
+                # Do not leave an interchange and later come back via its paired ID.
+                continue
+
             next_path = path_edges + [(current_id, edge)]
             next_visited = set(visited)
             next_visited.add(next_id)
-            cost = sum(_edge_cost(item, optimise_by, fare_property) for _, item in next_path)
-            heapq.heappush(queue, (cost, tie_breaker, next_id, next_path, next_visited))
+            next_visited_physical = set(visited_physical)
+            next_visited_physical.add(next_physical_key)
+            cost = sum(
+                _edge_cost(item, optimise_by, fare_property)
+                for _, item in next_path
+            )
+            heapq.heappush(
+                queue,
+                (
+                    cost,
+                    tie_breaker,
+                    next_id,
+                    next_path,
+                    next_visited,
+                    next_visited_physical,
+                ),
+            )
             tie_breaker += 1
     return routes
 
@@ -279,9 +348,7 @@ def query_alternative_routes(
     network: str = "auto",
     max_routes: int = 3,
 ) -> list[list[dict]]:
-    """
-    Find route legs for paths that avoid a specific intermediate station.
-    """
+    """Find route legs that avoid a station and its interchange pair."""
     if avoid_station_id in {origin_id, destination_id}:
         return []
 

@@ -7,14 +7,14 @@ Loads station and network data from train-mock-data/:
   - metro_stations.json         — city metro stations and adjacencies
   - national_rail_stations.json — national rail stations and adjacencies
 
-Design your graph schema (node labels, relationship types, properties)
-based on the data in these files, then implement the seed() function below.
+This script rebuilds the graph used by route-finding queries.
 """
 
 import json
 import os
 import sys
 
+# Resolve paths from this file so the script works no matter where it is run.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 DATA_DIR = os.path.join(PROJECT_DIR, "train-mock-data")
@@ -26,25 +26,31 @@ from skeleton.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 
 
 def _load(filename):
+    """Load one JSON data file from train-mock-data/."""
     with open(os.path.join(DATA_DIR, filename), encoding="utf-8") as f:
         return json.load(f)
 
 
 def seed():
+    """Rebuild all Neo4j station nodes and route relationships."""
     metro_stations = _load("metro_stations.json")
-    rail_stations  = _load("national_rail_stations.json")
+    rail_stations = _load("national_rail_stations.json")
 
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     with driver.session() as session:
 
+        # Start from a clean graph so old relationships cannot affect routes.
         session.run("MATCH (n) DETACH DELETE n")
         print("  Cleared existing graph data")
 
+        # station_id is the stable public ID used by the agent, e.g. MS15/NR07.
         session.run(
             "CREATE CONSTRAINT station_id_unique IF NOT EXISTS "
             "FOR (s:Station) REQUIRE s.station_id IS UNIQUE"
         )
 
+        # Create city metro stations.  Interchange properties are kept on the
+        # node so route queries can treat paired metro/rail IDs as one place.
         for station in metro_stations:
             session.run(
                 """
@@ -62,13 +68,17 @@ def seed():
                 lines=station.get("lines", []),
                 is_interchange_metro=station.get("is_interchange_metro", False),
                 interchange_metro_lines=station.get("interchange_metro_lines", []),
-                is_interchange_national_rail=station.get("is_interchange_national_rail", False),
+                is_interchange_national_rail=station.get(
+                    "is_interchange_national_rail", False
+                ),
                 interchange_national_rail_station_id=station.get(
                     "interchange_national_rail_station_id"
                 ),
             )
         print(f"  Created {len(metro_stations)} MetroStation nodes")
 
+        # Create national rail stations.  interchange_metro_station_id links a
+        # rail node back to its paired metro node, e.g. NR07 -> MS15.
         for station in rail_stations:
             session.run(
                 """
@@ -95,6 +105,7 @@ def seed():
             )
         print(f"  Created {len(rail_stations)} NationalRailStation nodes")
 
+        # Create directed metro edges from each station's adjacent_stations list.
         metro_links = 0
         for station in metro_stations:
             for adjacent in station.get("adjacent_stations", []):
@@ -115,6 +126,7 @@ def seed():
                 metro_links += 1
         print(f"  Created {metro_links} METRO_LINK relationships")
 
+        # Create directed national rail edges from each station's adjacency list.
         rail_links = 0
         for station in rail_stations:
             for adjacent in station.get("adjacent_stations", []):
@@ -135,6 +147,8 @@ def seed():
                 rail_links += 1
         print(f"  Created {rail_links} RAIL_LINK relationships")
 
+        # Add both directions for metro <-> rail transfer links.
+        # Route search counts each transfer as 5 minutes and no extra fare.
         interchanges = 0
         for station in metro_stations:
             rail_station_id = station.get("interchange_national_rail_station_id")
