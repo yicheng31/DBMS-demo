@@ -145,7 +145,7 @@ The search pipeline is:
 
 Cosine similarity is appropriate because policy search is semantic rather than exact keyword search. It compares vector direction, so documents can match even when the user uses different wording from the original policy text. This is useful for questions such as "Can I bring luggage?" or "What happens if the train is delayed?"
 
-The schema uses `vector(768)` for the default Ollama embedding model. The schema comments also note that Gemini embeddings use `vector(3072)`. If the provider is changed after seeding, existing stored embeddings would have a different dimension from new query embeddings. In that case the vector index cannot compare them correctly, so the database should be reset and policy documents re-seeded with the new provider.
+The current schema uses `vector(3072)` for Gemini `gemini-embedding-001`, matching `.env.example` and the schema comments. The code also documents Ollama `nomic-embed-text` as a 768-dimensional alternative. If the provider is changed after seeding, existing stored embeddings would have a different dimension from new query embeddings. In that case the vector table/schema should be reset to the matching dimension and policy documents re-seeded with the new provider.
 
 ## Section 5 - AI Tool Usage Evidence
 

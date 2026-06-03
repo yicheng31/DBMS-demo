@@ -2,7 +2,7 @@
 
 Repository used as evidence: https://github.com/yicheng31/DBMS-demo
 
-This report is based on visible commit history, merged pull requests, and changed files. Replace Team ID, real names, student IDs, and signatures before submission.
+This report is based on visible commit history, merged pull requests, and changed files.
 
 ## 1. Team Members
 
@@ -17,8 +17,8 @@ This report is based on visible commit history, merged pull requests, and change
 | Member | Evidence from commit history |
 |---|---|
 | Yicheng | Main relational implementation and integration: `87ccc9b first_update` changed `databases/relational/schema.sql`, `databases/relational/queries.py`, `skeleton/seed_postgres.py`, `docker-compose.yml`, and `requirements.txt`; `1c736f3` adjusted fare calculation; `2c57fad` adjusted zero-seat availability behavior; `565b93a`, `ef0a976`, and `a4f1651` fixed agent/UI/Codespaces seed configuration. GitHub PRs #1 and #4 are under `yicheng31`. |
-| Fongyi | Main graph implementation: `7c24106` implemented metro/rail station node seeding; `2b11d8d`, `51dc5d8`, and `9206cd8` worked on `databases/graph/queries.py`; `5d410f7` and `0e3969c` updated `skeleton/seed_neo4j.py`; PR #2 merged graph seed/query work; PR #5 refined route query return shape and delay-ripple behavior; PR #6 continues graph route readability and interchange-pair improvements. |
-| Yuhao | UI and Task 6 extension: `2a3cf21` enhanced `skeleton/ui.py` with optimization and Chinese localization; `2ccbc03` touched `skeleton/agent.py`; PR #3 added optimized `agent.py` and `ui.py`, Chinese station support, Chinese policy translation, tool-routing fallback logic, user profile/payment tools, booking confirmation gate, and UI quick-select station buttons. |
+| Fongyi | Main graph implementation: `7c24106` implemented metro/rail station node seeding; `2b11d8d`, `51dc5d8`, and `9206cd8` worked on `databases/graph/queries.py`; `5d410f7` and `0e3969c` updated `skeleton/seed_neo4j.py`; PR #2 merged graph seed/query work; PR #5 refined route query return shape and delay-ripple behavior; PR #6 merged graph route readability and interchange-pair improvements. |
+| Yuhao | UI and Task 6 extension: `2a3cf21` enhanced `skeleton/ui.py` with optimization and Chinese localization; `3042839`, `a35489c`, `feb6a14`, and `16293e3` updated `skeleton/agent.py`; PR #3 added optimized `agent.py` and `ui.py`, Chinese station support, Chinese policy translation, tool-routing fallback logic, user profile/payment tools, booking confirmation gate, and UI quick-select station buttons. |
 
 ## 3. Task Ownership
 
@@ -74,5 +74,10 @@ We confirm that this work allocation reflects the visible commit history and the
 | Name | Signature / Typed name | Date |
 |---|---|---|
 | Yicheng | 林益誠 | 2026/6/3 12:14 |
+<<<<<<< HEAD
 | Fongyi | 曾丰翊 | 2026/6/3 12:20 |
 | Yuhao | TODO | TODO |
+=======
+| Fongyi | Fongyi | 2026/6/3 |
+| Yuhao | Yuhao | 2026/6/3 |
+>>>>>>> 682b159 (更改design, allocation)
