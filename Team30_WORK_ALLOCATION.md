@@ -75,4 +75,6 @@ We confirm that this work allocation reflects the visible commit history and the
 |-------|----------------------|--------------|
 |Yicheng|林益誠                   |2026/6/3 12:14|
 |Fongyi |曾丰翊                   |2026/6/3 12:20|
-|Yuhao  |TODO                  |TODO          |
+|Yuhao  |賴昱豪               |2026/6/3 14:26
+
+|
