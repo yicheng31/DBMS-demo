@@ -16,7 +16,7 @@ OPTIMIZATIONS:
   6.  Stronger fallback: overrides wrong tool selections
   7.  Greeting protection: skip tool calls for simple greetings
   8.  Chinese policy query translation for vector search
-  9.  Pre-classification: categorize query BEFORE LLM (14→2-4 tools)
+  9.  Pre-classification: categorize query BEFORE LLM (14->2-4 tools)
   10. Automatic date extraction from natural language
   11. Multi-step chaining: booking queries auto-call availability+fare+seats
   12. Cancel vs policy smart classification
@@ -29,8 +29,8 @@ OPTIMIZATIONS:
   19. Booking context recovery uses correct search order (BUG FIX #2)
   20. Fare class extracted from USER messages only (BUG FIX #3)
   21. Continuation dialog detection from history (BUG FIX #4)
-  22. hops=0 support: extract from message, None check prevents 0→2 (BUG FIX #5)
-  23. Avoid keyword detection → find_alternative_routes (BUG FIX #6)
+  22. hops=0 support: extract from message, None check prevents 0->2 (BUG FIX #5)
+  23. Avoid keyword detection -> find_alternative_routes (BUG FIX #6)
   24. Cross-network alternative routes force network=auto (BUG FIX #7)
 """
 
@@ -67,7 +67,7 @@ from databases.graph.queries import (
 )
 
 
-# ── Station name → ID lookup ─────────────────────────────────────────────────
+# -- Station name -> ID lookup -------------------------------------------------
 
 _STATION_INDEX: dict[str, str] = {
     "central square": "MS01", "riverside": "MS02", "northgate": "MS03",
@@ -130,7 +130,7 @@ def _inject_station_ids(text: str) -> str:
     return result
 
 
-# ── Detection helpers ─────────────────────────────────────────────────────────
+# -- Detection helpers ---------------------------------------------------------
 
 _GREETING_PATTERNS = {
     "你好", "您好", "嗨", "哈囉", "早安", "午安", "晚安",
@@ -189,8 +189,8 @@ def _extract_date(text: str) -> Optional[str]:
 # BUG FIX #1: Deduplicate station IDs while preserving order.
 # Before: "Bridgeport NR06 到 Central Station NR01" after injection became
 # "Bridgeport (NR06) NR06 到 Central Station (NR01) NR01"
-# → [NR06, NR06, NR01, NR01] → station_ids[1] = NR06 (WRONG!)
-# After: [NR06, NR01] → station_ids[1] = NR01 (CORRECT!)
+# -> [NR06, NR06, NR01, NR01] -> station_ids[1] = NR06 (WRONG!)
+# After: [NR06, NR01] -> station_ids[1] = NR01 (CORRECT!)
 def _extract_station_ids(text: str) -> list[str]:
     """Extract unique station IDs preserving first-occurrence order."""
     seen = set()
@@ -226,7 +226,7 @@ def _extract_fare_class(text: str) -> str:
     return "standard"
 
 
-# ── Pre-classification ────────────────────────────────────────────────────────
+# -- Pre-classification --------------------------------------------------------
 
 def _pre_classify_query(text: str, station_ids: list[str], has_date: bool,
                         current_user_email: Optional[str]) -> str:
@@ -325,7 +325,7 @@ def _filter_tools(tools: list[dict], category: str) -> list[dict]:
     return [t for t in tools if t["name"] in allowed]
 
 
-# ── Booking context recovery ─────────────────────────────────────────────────
+# -- Booking context recovery -------------------------------------------------
 # BUG FIX #2: Removed `reversed` so schedule_id search finds the FIRST
 # (correct) schedule, not a later wrong one.
 # BUG FIX #3: Extract fare_class from USER messages only, not from AI
@@ -377,7 +377,7 @@ def _recover_booking_context(history: list[dict]) -> Optional[dict]:
     }
 
 
-# ── System prompt ─────────────────────────────────────────────────────────────
+# -- System prompt -------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are TransitFlow, a friendly transit assistant.
 
@@ -387,18 +387,18 @@ Today: {today}
 
 PERSONALITY: Warm, helpful, patient. Never show raw errors. Always offer to help more.
 
-RESPONSE FORMAT: Use emojis (🚂🚇💰💺🗺️📋). Keep concise but complete.
+RESPONSE FORMAT: Use emojis (). Keep concise but complete.
 
 BOOKING CONFIRMATION (CRITICAL):
 When showing booking details, ALWAYS use this format:
-  📋 訂票摘要：
-  🚂 路線：[origin] ([origin_id]) → [dest] ([dest_id])
-  🔢 班次：[schedule_id]
-  📅 日期：[date]
-  🎫 票種：[ticket_type]
-  💺 等級：[fare_class]
-  💰 票價：$[fare]
-  🪑 座位：[seat_id]
+   訂票摘要：
+   路線：[origin] ([origin_id]) -> [dest] ([dest_id])
+   班次：[schedule_id]
+   日期：[date]
+   票種：[ticket_type]
+   等級：[fare_class]
+   票價：$[fare]
+   座位：[seat_id]
   請回覆「確認」以完成訂票。
 
 MULTI-SCHEDULE: When multiple schedules found, list ALL with numbers for user to choose.
@@ -410,7 +410,7 @@ Always reply in the same language as the user.
 """.format(today=date.today().isoformat())
 
 
-# ── Tool definitions ──────────────────────────────────────────────────────────
+# -- Tool definitions ----------------------------------------------------------
 
 TOOLS = [
     {"name": "check_national_rail_availability",
@@ -539,7 +539,7 @@ get_delay_ripple(station_id, hops?)
 get_station_connections(station_id)"""
 
 
-# ── Tool execution ────────────────────────────────────────────────────────────
+# -- Tool execution ------------------------------------------------------------
 
 def _execute_tool(tool_name: str, params: dict,
                   current_user_email: Optional[str] = None) -> str:
@@ -574,17 +574,17 @@ def _execute_tool(tool_name: str, params: dict,
                           "stops": n_stops, **(fare or {"error": "票價查詢失敗"})}
         elif tool_name == "get_user_bookings":
             if not current_user_email:
-                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 "})
             result = query_user_bookings(current_user_email)
         elif tool_name == "get_user_profile":
             if not current_user_email:
-                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 "})
             result = query_user_profile(current_user_email)
             if result is None:
                 return json.dumps({"error": "找不到使用者資料，請重新登入。"})
         elif tool_name == "get_payment_info":
             if not current_user_email:
-                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 "})
             result = query_payment_info(params["booking_id"])
             if result is None:
                 return json.dumps({"error": f"找不到訂單 {params['booking_id']} 的付款紀錄。"})
@@ -600,7 +600,7 @@ def _execute_tool(tool_name: str, params: dict,
             result = query_available_seats(**params)
         elif tool_name == "make_booking":
             if not current_user_email:
-                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 "})
             profile = query_user_profile(current_user_email)
             if not profile:
                 return json.dumps({"error": "找不到使用者資料，請重新登入。"})
@@ -613,7 +613,7 @@ def _execute_tool(tool_name: str, params: dict,
             result = data if ok else {"error": f"訂票失敗：{data}"}
         elif tool_name == "cancel_booking":
             if not current_user_email:
-                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 😊"})
+                return json.dumps({"error": "您尚未登入。請點右上角的登入按鈕後再試 "})
             profile = query_user_profile(current_user_email)
             if not profile:
                 return json.dumps({"error": "找不到使用者資料，請重新登入。"})
@@ -646,7 +646,7 @@ def _execute_tool(tool_name: str, params: dict,
             else:
                 result = query_shortest_route(oid, did, network)
         elif tool_name == "find_alternative_routes":
-            # BUG FIX: Cross-network queries (MS→NR) must use network="auto".
+            # BUG FIX: Cross-network queries (MS->NR) must use network="auto".
             # network="metro" returns [] because metro cannot reach NR stations.
             o = params["origin_id"]
             d = params["destination_id"]
@@ -669,7 +669,7 @@ def _execute_tool(tool_name: str, params: dict,
         return json.dumps({"error": f"系統發生錯誤：{str(e)}。請稍後再試。"})
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------------------------------------------
 
 def _flatten_to_text(obj, depth: int = 0) -> str:
     pad = "  " * depth
@@ -730,7 +730,7 @@ def _parse_tool_calls(llm_response: str) -> list[dict] | None:
     return None
 
 
-# ── Multi-step booking chain ──────────────────────────────────────────────────
+# -- Multi-step booking chain --------------------------------------------------
 
 def _chain_booking_query(origin_id, destination_id, travel_date, fare_class,
                          seat_preference, current_user_email, debug_info, debug):
@@ -772,15 +772,15 @@ def _chain_booking_query(origin_id, destination_id, travel_date, fare_class,
     return results
 
 
-# ── Main agent loop ───────────────────────────────────────────────────────────
+# -- Main agent loop -----------------------------------------------------------
 
 def run_agent(user_message: str, history: list[dict], debug: bool = False,
               current_user_email: Optional[str] = None) -> tuple:
     debug_info = []
 
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     # Step 0a: CONFIRMATION CHECK (on RAW user_message, before anything)
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     if _is_confirmation(user_message):
         if debug:
             debug_info.append("**Confirmation detected** (early check on raw message)")
@@ -788,7 +788,7 @@ def run_agent(user_message: str, history: list[dict], debug: bool = False,
         if not current_user_email:
             if debug:
                 debug_info.append("**Booking blocked:** not logged in")
-            answer = "您尚未登入，無法完成訂票。請點右上角的登入按鈕後再試 😊"
+            answer = "您尚未登入，無法完成訂票。請點右上角的登入按鈕後再試 "
         else:
             booking_ctx = _recover_booking_context(history)
             if booking_ctx:
@@ -824,12 +824,12 @@ def run_agent(user_message: str, history: list[dict], debug: bool = False,
             return answer, updated_history, "\n\n".join(debug_info)
         return answer, updated_history
 
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     # Step 0b: GREETING CHECK
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     if _is_greeting(user_message):
         if debug:
-            debug_info.append("**Greeting detected** — skipping all tool calls.")
+            debug_info.append("**Greeting detected** - skipping all tool calls.")
         answer = llm.chat(
             messages=history + [{"role": "user", "content": user_message}],
             system_prompt=SYSTEM_PROMPT)
@@ -841,9 +841,9 @@ def run_agent(user_message: str, history: list[dict], debug: bool = False,
             return answer, updated_history, "\n\n".join(debug_info)
         return answer, updated_history
 
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     # Step 1: Pre-processing
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     _augmented = _inject_station_ids(user_message)
     _station_ids = _extract_station_ids(_augmented)
     _travel_date = _extract_date(user_message)
@@ -852,13 +852,13 @@ def run_agent(user_message: str, history: list[dict], debug: bool = False,
     _seat_pref = _extract_seat_preference(user_message)
     _lower = _augmented.lower()
 
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     # Step 2: Pre-classify
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     category = _pre_classify_query(_augmented, _station_ids, _travel_date is not None,
                                    current_user_email)
 
-    # ── BUG FIX #4: Continuation dialog detection ────────────────────
+    # -- BUG FIX #4: Continuation dialog detection --------------------
     # If category is "general" but message has booking keywords without
     # station IDs, check conversation history for station context.
     if category == "general":
@@ -881,9 +881,9 @@ def run_agent(user_message: str, history: list[dict], debug: bool = False,
     if debug:
         debug_info.append(f"**Pre-classification:** {category}")
 
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     # Step 3: Context prompt
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     if current_user_email:
         profile = query_user_profile(current_user_email)
         user_display = f"{profile['full_name']} ({current_user_email})" if profile else current_user_email
@@ -891,9 +891,9 @@ def run_agent(user_message: str, history: list[dict], debug: bool = False,
     else:
         contextual_prompt = SYSTEM_PROMPT + "\n\n目前沒有使用者登入。訂票和取消需要先登入。"
 
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     # Step 4: Execute based on category
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     tool_results = []
 
     if category == "booking" and len(_station_ids) >= 2:
@@ -917,7 +917,7 @@ def run_agent(user_message: str, history: list[dict], debug: bool = False,
 
         if _has_avoid and len(_station_ids) >= 3:
             # BUG FIX: Use find_alternative_routes when "avoid" keyword detected.
-            # BUG FIX: Cross-network (MS→NR or NR→MS) must use network="auto",
+            # BUG FIX: Cross-network (MS->NR or NR->MS) must use network="auto",
             # not "metro", otherwise the route is always empty.
             o, d, avoid = _station_ids[0], _station_ids[1], _station_ids[2]
             _network = "auto" if o[:2].upper() != d[:2].upper() else (
@@ -987,8 +987,8 @@ def run_agent(user_message: str, history: list[dict], debug: bool = False,
             tc = llm.ollama_tool_call(
                 history[-4:] if len(history) > 4 else history, filtered, _augmented,
                 system_prompt=f"Tool router. User: {current_user_email or 'none'}. "
-                              "bookings→get_user_bookings, profile→get_user_profile, "
-                              "payment→get_payment_info(booking_id).")
+                              "bookings->get_user_bookings, profile->get_user_profile, "
+                              "payment->get_payment_info(booking_id).")
         else:
             tc = [{"name": "get_user_bookings", "params": {}}]
         if debug:
@@ -1063,9 +1063,9 @@ def run_agent(user_message: str, history: list[dict], debug: bool = False,
             tool_results.append({"tool": "get_national_rail_schedule_fares", "params": params,
                                   "result": r, "summary": r})
 
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     # Step 5: Compose final answer
-    # ══════════════════════════════════════════════════════════════════
+    # ==================================================================
     _DB_KW = {"booking", "ticket", "schedule", "fare", "route", "seat",
               "train", "metro", "journey", "trip", "history", "reservation",
               "訂票", "班次", "票價", "路線", "座位", "捷運", "列車"}
